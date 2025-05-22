@@ -1,119 +1,183 @@
-// server/routes/userRoutes.js
 const express = require('express');
 const router = express.Router();
+const { check, validationResult } = require('express-validator');
+const bcrypt = require('bcrypt');
 const User = require('../models/User');
-const jwt = require('jsonwebtoken');
 const auth = require('../middleware/auth');
 
-// Register a new user
-router.post('/register', async (req, res) => {
-  const { name, email, password } = req.body;
-  
-  try {
-    // Check if user already exists
-    let user = await User.findOne({ email });
-    if (user) {
-      return res.status(400).json({ msg: 'User already exists' });
+// @route   POST api/users/register
+// @desc    Register a user
+// @access  Public
+router.post(
+  '/register',
+  [
+    check('name', 'Name is required').not().isEmpty(),
+    check('email', 'Please include a valid email').isEmail(),
+    check('password', 'Please enter a password with 6 or more characters').isLength({ min: 6 })
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
     }
-    
-    // Create new user
-    user = new User({
-      name,
-      email,
-      password
-    });
-    
-    await user.save();
-    
-    // Generate JWT
-    const payload = {
-      user: {
-        id: user.id
-      }
-    };
-    
-    jwt.sign(
-      payload,
-      process.env.JWT_SECRET || 'secret',
-      { expiresIn: '7d' },
-      (err, token) => {
-        if (err) throw err;
-        res.json({ token });
-      }
-    );
-  } catch (err) {
-    console.error(err);
-    res.status(500).send('Server Error');
-  }
-});
 
-// Login user
-router.post('/login', async (req, res) => {
-  const { email, password } = req.body;
-  
-  try {
-    // Check if user exists
-    const user = await User.findOne({ email });
-    if (!user) {
-      return res.status(400).json({ msg: 'Invalid credentials' });
-    }
-    
-    // Compare password
-    const isMatch = await user.comparePassword(password);
-    if (!isMatch) {
-      return res.status(400).json({ msg: 'Invalid credentials' });
-    }
-    
-    // Generate JWT
-    const payload = {
-      user: {
-        id: user.id
-      }
-    };
-    
-    jwt.sign(
-      payload,
-      process.env.JWT_SECRET || 'secret',
-      { expiresIn: '7d' },
-      (err, token) => {
-        if (err) throw err;
-        res.json({ token });
-      }
-    );
-  } catch (err) {
-    console.error(err);
-    res.status(500).send('Server Error');
-  }
-});
+    const { name, email, password } = req.body;
 
-// Get user profile
+    try {
+      // Check if user exists
+      let user = await User.findOne({ email });
+
+      if (user) {
+        return res.status(400).json({ msg: 'User already exists' });
+      }
+
+      // Create new user
+      user = new User({
+        name,
+        email,
+        password
+      });
+
+      // Save user to the database (password hashing is handled in the model)
+      await user.save();
+
+      // Generate and return JWT token
+      const token = user.generateAuthToken();
+
+      res.json({ token });
+    } catch (err) {
+      console.error(err.message);
+      res.status(500).send('Server error');
+    }
+  }
+);
+
+// @route   POST api/users/login
+// @desc    Authenticate user & get token
+// @access  Public
+router.post(
+  '/login',
+  [
+    check('email', 'Please include a valid email').isEmail(),
+    check('password', 'Password is required').exists()
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const { email, password } = req.body;
+
+    try {
+      // Check if user exists
+      const user = await User.findOne({ email });
+
+      if (!user) {
+        return res.status(400).json({ msg: 'Invalid credentials' });
+      }
+
+      // Check password
+      const isMatch = await user.comparePassword(password);
+
+      if (!isMatch) {
+        return res.status(400).json({ msg: 'Invalid credentials' });
+      }
+
+      // Generate and return JWT token
+      const token = user.generateAuthToken();
+
+      res.json({ token });
+    } catch (err) {
+      console.error(err.message);
+      res.status(500).send('Server error');
+    }
+  }
+);
+
+// @route   GET api/users/me
+// @desc    Get current user's profile
+// @access  Private
 router.get('/me', auth, async (req, res) => {
   try {
     const user = await User.findById(req.user.id).select('-password');
+    
     if (!user) {
       return res.status(404).json({ msg: 'User not found' });
     }
+    
     res.json(user);
   } catch (err) {
-    console.error(err);
-    res.status(500).send('Server Error');
+    console.error(err.message);
+    res.status(500).send('Server error');
   }
 });
 
-// Update user profile
-router.put('/me', auth, async (req, res) => {
-  const { name, email, profileSettings } = req.body;
-  
+// @route   PUT api/users/watchlist
+// @desc    Add or remove items from watchlist
+// @access  Private
+router.put('/watchlist', auth, async (req, res) => {
   try {
+    const { action, symbol, type } = req.body;
+    
+    if (!action || !symbol) {
+      return res.status(400).json({ msg: 'Action and symbol are required' });
+    }
+    
     const user = await User.findById(req.user.id);
     
     if (!user) {
       return res.status(404).json({ msg: 'User not found' });
     }
     
-    // Update fields
+    // Initialize watchlist if it doesn't exist
+    if (!user.watchlist) {
+      user.watchlist = [];
+    }
+    
+    if (action === 'add') {
+      // Check if symbol already exists in watchlist
+      const symbolExists = user.watchlist.some(item => item.symbol === symbol);
+      
+      if (symbolExists) {
+        return res.status(400).json({ msg: 'Symbol already in watchlist' });
+      }
+      
+      user.watchlist.push({
+        symbol,
+        type: type || 'unknown',
+        addedAt: Date.now()
+      });
+    } else if (action === 'remove') {
+      user.watchlist = user.watchlist.filter(item => item.symbol !== symbol);
+    } else {
+      return res.status(400).json({ msg: 'Invalid action' });
+    }
+    
+    await user.save();
+    res.json(user.watchlist);
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).send('Server error');
+  }
+});
+
+// @route   PUT api/users/profile
+// @desc    Update user profile settings
+// @access  Private
+router.put('/profile', auth, async (req, res) => {
+  try {
+    const { name, profileSettings } = req.body;
+    
+    const user = await User.findById(req.user.id);
+    
+    if (!user) {
+      return res.status(404).json({ msg: 'User not found' });
+    }
+    
+    // Update fields if provided
     if (name) user.name = name;
-    if (email) user.email = email;
+    
     if (profileSettings) {
       user.profileSettings = {
         ...user.profileSettings,
@@ -123,44 +187,12 @@ router.put('/me', auth, async (req, res) => {
     
     await user.save();
     
-    // Return updated user without password
+    // Return user without password
     const updatedUser = await User.findById(req.user.id).select('-password');
     res.json(updatedUser);
   } catch (err) {
-    console.error(err);
-    res.status(500).send('Server Error');
-  }
-});
-
-// Manage watchlist
-router.put('/watchlist', auth, async (req, res) => {
-  const { action, symbol, type } = req.body;
-  
-  try {
-    const user = await User.findById(req.user.id);
-    
-    if (!user) {
-      return res.status(404).json({ msg: 'User not found' });
-    }
-    
-    // Add to watchlist
-    if (action === 'add') {
-      // Check if already in watchlist
-      const exists = user.watchlist.some(item => item.symbol === symbol);
-      if (!exists) {
-        user.watchlist.push({ symbol, type });
-      }
-    }
-    // Remove from watchlist
-    else if (action === 'remove') {
-      user.watchlist = user.watchlist.filter(item => item.symbol !== symbol);
-    }
-    
-    await user.save();
-    res.json(user.watchlist);
-  } catch (err) {
-    console.error(err);
-    res.status(500).send('Server Error');
+    console.error(err.message);
+    res.status(500).send('Server error');
   }
 });
 

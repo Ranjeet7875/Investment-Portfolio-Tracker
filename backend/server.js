@@ -9,6 +9,7 @@ const assetRoutes = require('./routes/assetRoutes');
 const portfolioRoutes = require('./routes/portfolioRoutes');
 const userRoutes = require('./routes/userRoutes');
 const marketDataRoutes = require('./routes/marketDataRoutes');
+const transaction=require('./routes/transactionRoutes')
 
 // Initialize express app
 const app = express();
@@ -28,6 +29,7 @@ app.use('/api/assets', assetRoutes);
 app.use('/api/portfolio', portfolioRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/market', marketDataRoutes);
+app.use('/api/portfolio/transactions',transaction)
 
 // Basic health check route
 app.get('/', (req, res) => {

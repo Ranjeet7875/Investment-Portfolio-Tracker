@@ -1,437 +1,474 @@
 // server/services/marketDataService.js
 const axios = require('axios');
 
-// This service handles communication with external APIs for market data
-// In a production environment, you would replace this with real API calls
-// For this example, we'll use demo/mock data
-
-// Cache to store market data and avoid excessive API calls
+// Cache to store market data and reduce API calls
 const cache = {
   prices: {},
-  history: {},
+  historical: {},
+  search: {},
+  news: [],
+  overview: null,
   lastUpdated: {}
 };
 
-// Clear cache for data older than 5 minutes
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes in milliseconds
-
-function clearStaleCache() {
-  const now = Date.now();
-  
-  Object.keys(cache.lastUpdated).forEach(key => {
-    if (now - cache.lastUpdated[key] > CACHE_TTL) {
-      delete cache.prices[key];
-      delete cache.history[key];
-      delete cache.lastUpdated[key];
-    }
-  });
-}
-
-// Run cache cleanup every minute
-setInterval(clearStaleCache, 60000);
-
-// Demo stock symbols
-const DEMO_STOCKS = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NVDA', 'JPM', 'V', 'WMT'];
-// Demo crypto symbols
-const DEMO_CRYPTO = ['BTC', 'ETH', 'SOL', 'ADA', 'DOT', 'AVAX', 'MATIC', 'XRP', 'DOGE', 'SHIB'];
-
-// Demo market indices
-const MARKET_INDICES = {
-  'S&P 500': { value: 5102.22, change: 0.45 },
-  'NASDAQ': { value: 16996.32, change: 0.73 },
-  'DOW': { value: 38784.41, change: 0.23 },
-  'BTC/USD': { value: 62580.12, change: 1.2 }
+// Cache TTL in milliseconds
+const CACHE_TTL = {
+  PRICES: 5 * 60 * 1000, // 5 minutes
+  HISTORICAL: 60 * 60 * 1000, // 1 hour
+  SEARCH: 24 * 60 * 60 * 1000, // 24 hours
+  NEWS: 30 * 60 * 1000, // 30 minutes
+  OVERVIEW: 15 * 60 * 1000 // 15 minutes
 };
 
-// Get price for a single symbol
-async function getPriceForSymbol(symbol) {
+// Helper function to check if cache is valid
+const isCacheValid = (type, key = 'default') => {
+  if (!cache.lastUpdated[type] || !cache.lastUpdated[type][key]) {
+    return false;
+  }
+  
+  const now = Date.now();
+  const lastUpdate = cache.lastUpdated[type][key];
+  return (now - lastUpdate) < CACHE_TTL[type];
+};
+
+// Update cache helper
+const updateCache = (type, data, key = 'default') => {
+  if (!cache.lastUpdated[type]) {
+    cache.lastUpdated[type] = {};
+  }
+  cache.lastUpdated[type][key] = Date.now();
+  return data;
+};
+
+// Get current price for a single symbol
+const getPriceForSymbol = async (symbol) => {
   try {
     // Check cache first
-    if (cache.prices[symbol] && 
-        cache.lastUpdated[symbol] && 
-        Date.now() - cache.lastUpdated[symbol] < CACHE_TTL) {
+    if (isCacheValid('PRICES', symbol) && cache.prices[symbol]) {
       return cache.prices[symbol];
     }
     
-    // In a real application, you would call an external API here
-    // For demonstration, we'll generate a random price
+    // Determine API to use based on symbol format
+    // For cryptocurrency (if symbol contains '-' or is known crypto symbol)
+    if (symbol.includes('-') || /^(BTC|ETH|XRP|LTC|BCH|ADA|DOT|LINK|XLM)$/i.test(symbol)) {
+      const response = await axios.get(
+        `https://api.coingecko.com/api/v3/simple/price?ids=${symbol.toLowerCase()}&vs_currencies=usd`
+      );
+      
+      if (response.data && response.data[symbol.toLowerCase()]) {
+        const price = response.data[symbol.toLowerCase()].usd;
+        cache.prices[symbol] = price;
+        return updateCache('PRICES', price, symbol);
+      }
 
-    // For demo purposes, we'll simulate an API call with a short delay
-    await new Promise(resolve => setTimeout(resolve, 100));
+      // Try alternative lookup for coins by symbol instead of id
+      const coinsResponse = await axios.get(
+        'https://api.coingecko.com/api/v3/coins/list'
+      );
+      
+      const coin = coinsResponse.data.find(c => 
+        c.symbol.toLowerCase() === symbol.toLowerCase()
+      );
+      
+      if (coin) {
+        const detailResponse = await axios.get(
+          `https://api.coingecko.com/api/v3/simple/price?ids=${coin.id}&vs_currencies=usd`
+        );
+        
+        if (detailResponse.data && detailResponse.data[coin.id]) {
+          const price = detailResponse.data[coin.id].usd;
+          cache.prices[symbol] = price;
+          return updateCache('PRICES', price, symbol);
+        }
+      }
+    } 
+    // For stocks and other assets, use a financial API
+    else {
+      // Replace with your preferred stock API
+      // For example: Alpha Vantage, Yahoo Finance, etc.
+      const response = await axios.get(
+        `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${symbol}&apikey=${process.env.ALPHA_VANTAGE_API_KEY}`
+      );
+      
+      if (response.data && response.data['Global Quote'] && response.data['Global Quote']['05. price']) {
+        const price = parseFloat(response.data['Global Quote']['05. price']);
+        cache.prices[symbol] = price;
+        return updateCache('PRICES', price, symbol);
+      }
+    }
     
-    let basePrice;
-    
-    // Set a reasonable base price for common symbols
-    if (symbol === 'AAPL') basePrice = 180;
-    else if (symbol === 'MSFT') basePrice = 420;
-    else if (symbol === 'GOOGL') basePrice = 150;
-    else if (symbol === 'AMZN') basePrice = 180;
-    else if (symbol === 'META') basePrice = 480;
-    else if (symbol === 'TSLA') basePrice = 177;
-    else if (symbol === 'BTC') basePrice = 62000;
-    else if (symbol === 'ETH') basePrice = 3000;
-    else basePrice = 100;
-    
-    // Add random variation
-    const randomVariation = (Math.random() - 0.5) * 0.05; // +/- 2.5%
-    const price = basePrice * (1 + randomVariation);
-    
-    // Store in cache
-    cache.prices[symbol] = price;
-    cache.lastUpdated[symbol] = Date.now();
-    
-    return price;
+    return null;
   } catch (error) {
     console.error(`Error fetching price for ${symbol}:`, error);
-    return null;
+    // If we got rate limited or API error, return cached value if it exists
+    return cache.prices[symbol] || null;
   }
-}
+};
 
-// Get prices for multiple symbols
-async function getPricesForSymbols(symbols) {
-  const prices = {};
-  
-  // Process symbols in parallel
-  await Promise.all(
-    symbols.map(async (symbol) => {
-      prices[symbol] = await getPriceForSymbol(symbol);
-    })
-  );
-  
-  return prices;
-}
+// Get prices for multiple symbols at once
+const getPricesForSymbols = async (symbols) => {
+  try {
+    const results = {};
+    
+    // Group symbols by type to batch API calls
+    const cryptoSymbols = [];
+    const stockSymbols = [];
+    
+    symbols.forEach(symbol => {
+      if (symbol.includes('-') || /^(BTC|ETH|XRP|LTC|BCH|ADA|DOT|LINK|XLM)$/i.test(symbol)) {
+        cryptoSymbols.push(symbol.toLowerCase());
+      } else {
+        stockSymbols.push(symbol);
+      }
+    });
+    
+    // Fetch crypto prices
+    if (cryptoSymbols.length > 0) {
+      try {
+        const cryptoIds = cryptoSymbols.join(',');
+        const response = await axios.get(
+          `https://api.coingecko.com/api/v3/simple/price?ids=${cryptoIds}&vs_currencies=usd`
+        );
+        
+        if (response.data) {
+          for (const symbol of cryptoSymbols) {
+            if (response.data[symbol]) {
+              results[symbol.toUpperCase()] = response.data[symbol].usd;
+              cache.prices[symbol.toUpperCase()] = response.data[symbol].usd;
+              updateCache('PRICES', null, symbol.toUpperCase());
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Error fetching crypto prices:', error);
+        // Fallback to individual requests or use cached values
+        for (const symbol of cryptoSymbols) {
+          const upperSymbol = symbol.toUpperCase();
+          if (cache.prices[upperSymbol]) {
+            results[upperSymbol] = cache.prices[upperSymbol];
+          } else {
+            try {
+              results[upperSymbol] = await getPriceForSymbol(upperSymbol);
+            } catch (e) {
+              console.error(`Error getting price for ${upperSymbol}:`, e);
+            }
+          }
+        }
+      }
+    }
+    
+    // Fetch stock prices (ideally should be batched but depends on API)
+    for (const symbol of stockSymbols) {
+      if (isCacheValid('PRICES', symbol) && cache.prices[symbol]) {
+        results[symbol] = cache.prices[symbol];
+      } else {
+        try {
+          const price = await getPriceForSymbol(symbol);
+          if (price) {
+            results[symbol] = price;
+          }
+        } catch (error) {
+          console.error(`Error fetching price for ${symbol}:`, error);
+          if (cache.prices[symbol]) {
+            results[symbol] = cache.prices[symbol];
+          }
+        }
+      }
+    }
+    
+    return results;
+  } catch (error) {
+    console.error('Error in getPricesForSymbols:', error);
+    return {};
+  }
+};
 
 // Get historical data for a symbol
-async function getHistoricalData(symbol, range = '1m') {
+const getHistoricalData = async (symbol, range = '1m') => {
   try {
     const cacheKey = `${symbol}-${range}`;
     
     // Check cache first
-    if (cache.history[cacheKey] && 
-        cache.lastUpdated[cacheKey] && 
-        Date.now() - cache.lastUpdated[cacheKey] < CACHE_TTL) {
-      return cache.history[cacheKey];
+    if (isCacheValid('HISTORICAL', cacheKey) && cache.historical[cacheKey]) {
+      return cache.historical[cacheKey];
     }
     
-    // For demo purposes, simulate API call with delay
-    await new Promise(resolve => setTimeout(resolve, 200));
+    let data = [];
     
-    // Determine number of data points based on range
-    let dataPoints;
-    switch(range) {
-      case '1d': dataPoints = 24; break;      // Hourly for 1 day
-      case '5d': dataPoints = 5 * 8; break;   // 8 points per day for 5 days
-      case '1m': dataPoints = 30; break;      // Daily for 1 month
-      case '3m': dataPoints = 90; break;      // Daily for 3 months
-      case '6m': dataPoints = 180; break;     // Daily for 6 months
-      case '1y': dataPoints = 365; break;     // Daily for 1 year
-      case '5y': dataPoints = 60; break;      // Monthly for 5 years
-      default: dataPoints = 30;               // Default to 1 month
-    }
+    // Handle different time ranges
+    const days = {
+      '1d': 1,
+      '5d': 5,
+      '1m': 30,
+      '3m': 90,
+      '6m': 180,
+      '1y': 365,
+      '5y': 1825
+    };
     
-    // Get base price for the symbol
-    const currentPrice = await getPriceForSymbol(symbol);
-    let basePrice = currentPrice || 100;
+    const daysCount = days[range] || 30;
     
-    // Generate historical data with a realistic pattern
-    const data = [];
-    const now = new Date();
-    let trend = Math.random() > 0.5 ? 1 : -1; // Start with random trend
-    
-    for (let i = dataPoints - 1; i >= 0; i--) {
-      // Create date for this data point
-      const date = new Date(now);
+    // For cryptocurrency
+    if (symbol.includes('-') || /^(BTC|ETH|XRP|LTC|BCH|ADA|DOT|LINK|XLM)$/i.test(symbol)) {
+      // Try to find the crypto ID first
+      let coinId = symbol.toLowerCase();
       
-      if (range === '1d') {
-        date.setHours(now.getHours() - i);
-      } else if (range === '5d') {
-        const hoursToSubtract = Math.floor(i / 8) * 24 + (i % 8) * 3;
-        date.setHours(now.getHours() - hoursToSubtract);
-      } else if (range === '5y') {
-        date.setMonth(now.getMonth() - i);
-      } else {
-        date.setDate(now.getDate() - i);
-      }
-      
-      // Every few points, consider changing the trend
-      if (i % 5 === 0) {
-        if (Math.random() < 0.3) {
-          trend = -trend;
+      // If using symbol instead of ID, find the correct ID
+      if (!symbol.includes('-')) {
+        try {
+          const coinsResponse = await axios.get('https://api.coingecko.com/api/v3/coins/list');
+          const coin = coinsResponse.data.find(c => 
+            c.symbol.toLowerCase() === symbol.toLowerCase()
+          );
+          
+          if (coin) {
+            coinId = coin.id;
+          }
+        } catch (error) {
+          console.error('Error finding coin ID:', error);
         }
       }
       
-      // Generate a price with a slight trend and randomness
-      const randomVariation = (Math.random() - 0.5) * 0.03; // +/- 1.5%
-      const trendFactor = trend * Math.random() * 0.01; // 0-1% in trend direction
+      const response = await axios.get(
+        `https://api.coingecko.com/api/v3/coins/${coinId}/market_chart?vs_currency=usd&days=${daysCount}`
+      );
       
-      const price = basePrice * (1 + randomVariation + trendFactor);
-      basePrice = price; // Use this price as the base for the next point
+      if (response.data && response.data.prices) {
+        // Format the data
+        data = response.data.prices.map(item => ({
+          date: new Date(item[0]),
+          price: item[1]
+        }));
+      }
+    } 
+    // For stocks and other assets
+    else {
+      // Replace with your preferred stock API for historical data
+      // For example: Alpha Vantage, Yahoo Finance, etc.
+      let interval = 'daily';
+      if (daysCount <= 5) interval = '60min';
       
-      data.push({
-        date: date.toISOString(),
-        price
-      });
+      const response = await axios.get(
+        `https://www.alphavantage.co/query?function=TIME_SERIES_${interval.toUpperCase()}&symbol=${symbol}&outputsize=full&apikey=${process.env.ALPHA_VANTAGE_API_KEY}`
+      );
+      
+      const timeSeriesKey = `Time Series (${interval === 'daily' ? 'Daily' : '60min'})`;
+      
+      if (response.data && response.data[timeSeriesKey]) {
+        const timeSeries = response.data[timeSeriesKey];
+        
+        // Convert to array and limit by days
+        data = Object.entries(timeSeries)
+          .map(([date, values]) => ({
+            date: new Date(date),
+            price: parseFloat(values['4. close'])
+          }))
+          .sort((a, b) => a.date - b.date)
+          .slice(-daysCount);
+      }
     }
     
-    const result = {
-      symbol,
-      range,
-      data
-    };
+    // Cache the result
+    cache.historical[cacheKey] = data;
+    updateCache('HISTORICAL', null, cacheKey);
     
-    // Store in cache
-    cache.history[cacheKey] = result;
-    cache.lastUpdated[cacheKey] = Date.now();
-    
-    return result;
+    return data;
   } catch (error) {
     console.error(`Error fetching historical data for ${symbol}:`, error);
-    return null;
+    return cache.historical[`${symbol}-${range}`] || [];
   }
-}
+};
 
-// Search for assets by keyword
-async function searchAssets(query, type) {
+// Search for assets
+const searchAssets = async (query, type = null) => {
   try {
-    // In a real application, you would call an external API here
-    // For demonstration, we'll return filtered demo data
+    const cacheKey = `${query}-${type || 'all'}`;
     
-    query = query.toLowerCase().trim();
-    
-    // Create a list of demo assets based on the symbols
-    const stockAssets = DEMO_STOCKS.map(symbol => ({
-      symbol,
-      name: getCompanyName(symbol),
-      type: 'stock'
-    }));
-    
-    const cryptoAssets = DEMO_CRYPTO.map(symbol => ({
-      symbol,
-      name: getCryptoName(symbol),
-      type: 'crypto'
-    }));
-    
-    let assets = [...stockAssets, ...cryptoAssets];
-    
-    // Filter by type if specified
-    if (type) {
-      assets = assets.filter(asset => asset.type === type);
+    // Check cache first
+    if (isCacheValid('SEARCH', cacheKey) && cache.search[cacheKey]) {
+      return cache.search[cacheKey];
     }
     
-    // Filter by query
-    const results = assets.filter(asset => 
-      asset.symbol.toLowerCase().includes(query) || 
-      asset.name.toLowerCase().includes(query)
-    );
+    let results = [];
+    
+    // Search for cryptocurrencies
+    if (!type || type === 'crypto') {
+      try {
+        const response = await axios.get(
+          `https://api.coingecko.com/api/v3/search?query=${query}`
+        );
+        
+        if (response.data && response.data.coins) {
+          const cryptoResults = response.data.coins.slice(0, 10).map(coin => ({
+            symbol: coin.symbol.toUpperCase(),
+            name: coin.name,
+            type: 'crypto',
+            image: coin.large,
+            id: coin.id
+          }));
+          
+          results = [...results, ...cryptoResults];
+        }
+      } catch (error) {
+        console.error('Error searching for cryptocurrencies:', error);
+      }
+    }
+    
+    // Search for stocks and other assets
+    if (!type || type === 'stock' || type === 'etf') {
+      try {
+        // Replace with your preferred stock search API
+        // For example: Alpha Vantage, Yahoo Finance, etc.
+        const response = await axios.get(
+          `https://www.alphavantage.co/query?function=SYMBOL_SEARCH&keywords=${query}&apikey=${process.env.ALPHA_VANTAGE_API_KEY}`
+        );
+        
+        if (response.data && response.data.bestMatches) {
+          const stockResults = response.data.bestMatches.map(match => ({
+            symbol: match['1. symbol'],
+            name: match['2. name'],
+            type: match['3. type'].toLowerCase() === 'etf' ? 'etf' : 'stock',
+            region: match['4. region']
+          }));
+          
+          results = [...results, ...stockResults];
+        }
+      } catch (error) {
+        console.error('Error searching for stocks:', error);
+      }
+    }
+    
+    // Cache the results
+    cache.search[cacheKey] = results;
+    updateCache('SEARCH', null, cacheKey);
     
     return results;
   } catch (error) {
-    console.error(`Error searching assets:`, error);
-    return [];
+    console.error('Error in searchAssets:', error);
+    return cache.search[`${query}-${type || 'all'}`] || [];
   }
-}
+};
 
 // Get market news
-async function getMarketNews(symbols, limit = 10) {
+const getMarketNews = async (symbols = null, limit = 10) => {
   try {
-    // In a real application, you would call a news API
-    // For demonstration, we'll generate mock news
-    
-    const news = [
-      {
-        id: 1,
-        title: 'Markets reach all-time high as tech stocks surge',
-        source: 'Market Watch',
-        url: '#',
-        publishedAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
-        symbols: ['AAPL', 'MSFT', 'GOOGL']
-      },
-      {
-        id: 2,
-        title: 'Bitcoin breaks $62,000 as institutional adoption grows',
-        source: 'Crypto News',
-        url: '#',
-        publishedAt: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString(),
-        symbols: ['BTC']
-      },
-      {
-        id: 3,
-        title: 'Federal Reserve signals potential interest rate cut',
-        source: 'Financial Times',
-        url: '#',
-        publishedAt: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString(),
-        symbols: []
-      },
-      {
-        id: 4,
-        title: 'Apple announces new product line, shares jump 3%',
-        source: 'Tech Insider',
-        url: '#',
-        publishedAt: new Date(Date.now() - 1.5 * 24 * 60 * 60 * 1000).toISOString(),
-        symbols: ['AAPL']
-      },
-      {
-        id: 5,
-        title: 'Ethereum upgrade successful, gas fees drop significantly',
-        source: 'Blockchain Report',
-        url: '#',
-        publishedAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
-        symbols: ['ETH']
-      },
-      {
-        id: 6,
-        title: 'Tesla deliveries exceed analyst expectations',
-        source: 'Auto News',
-        url: '#',
-        publishedAt: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(),
-        symbols: ['TSLA']
-      },
-      {
-        id: 7,
-        title: 'Amazon expands into healthcare sector with new acquisition',
-        source: 'Business Daily',
-        url: '#',
-        publishedAt: new Date(Date.now() - 4 * 24 * 60 * 60 * 1000).toISOString(),
-        symbols: ['AMZN']
-      },
-      {
-        id: 8,
-        title: 'Nvidia reports record quarterly earnings on AI chip demand',
-        source: 'Tech Report',
-        url: '#',
-        publishedAt: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(),
-        symbols: ['NVDA']
-      },
-      {
-        id: 9,
-        title: 'Global market volatility increases amid geopolitical tensions',
-        source: 'World Economics',
-        url: '#',
-        publishedAt: new Date(Date.now() - 6 * 24 * 60 * 60 * 1000).toISOString(),
-        symbols: []
-      },
-      {
-        id: 10,
-        title: 'Meta announces new VR technology advancements',
-        source: 'Tech Today',
-        url: '#',
-        publishedAt: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
-        symbols: ['META']
-      }
-    ];
-    
-    // Filter by symbols if provided
-    let filtered = news;
-    if (symbols) {
-      const symbolList = symbols.split(',');
-      filtered = news.filter(item => 
-        item.symbols.some(s => symbolList.includes(s)) || 
-        item.symbols.length === 0
-      );
+    // If no symbols provided, return general market news
+    if (!symbols && isCacheValid('NEWS') && cache.news.length > 0) {
+      return cache.news.slice(0, limit);
     }
     
-    // Return limited results
-    return filtered.slice(0, limit);
-  } catch (error) {
-    console.error(`Error fetching market news:`, error);
-    return [];
-  }
-}
-
-// Get market overview
-async function getMarketOverview() {
-  try {
-    // Get current prices for market indices
-    const indices = { ...MARKET_INDICES };
+    // Replace with your preferred financial news API
+    // For example: Alpha Vantage News API, Yahoo Finance, etc.
+    let newsUrl = 'https://newsapi.org/v2/top-headlines?category=business&language=en';
     
-    // Add some random variation to the values
-    Object.keys(indices).forEach(index => {
-      const randomVariation = (Math.random() - 0.5) * 0.01; // +/- 0.5%
-      indices[index].value = indices[index].value * (1 + randomVariation);
-      indices[index].change = indices[index].change + randomVariation * 100;
+    if (symbols) {
+      newsUrl = `https://newsapi.org/v2/everything?q=${symbols}&language=en&sortBy=publishedAt`;
+    }
+    
+    const response = await axios.get(newsUrl, {
+      headers: {
+        'X-Api-Key': process.env.NEWS_API_KEY
+      }
     });
     
-    // Get top gainers and losers
-    const topGainers = await getTopMovers('gainers', 5);
-    const topLosers = await getTopMovers('losers', 5);
-    
-    return {
-      indices,
-      topGainers,
-      topLosers,
-      timestamp: new Date().toISOString()
-    };
-  } catch (error) {
-    console.error(`Error fetching market overview:`, error);
-    return null;
-  }
-}
-
-// Helper function to get top movers (gainers or losers)
-async function getTopMovers(type, limit = 5) {
-  // Get all symbols
-  const allSymbols = [...DEMO_STOCKS, ...DEMO_CRYPTO];
-  
-  // Generate random data for all symbols
-  const movers = await Promise.all(
-    allSymbols.map(async (symbol) => {
-      const isGainer = Math.random() > 0.4; // 60% chance of being a gainer
-      const changePct = isGainer 
-        ? Math.random() * 10 + 1 // 1-11% gain
-        : -Math.random() * 10 - 1; // 1-11% loss
+    if (response.data && response.data.articles) {
+      const news = response.data.articles.slice(0, limit).map(article => ({
+        title: article.title,
+        description: article.description,
+        url: article.url,
+        source: article.source.name,
+        publishedAt: article.publishedAt,
+        image: article.urlToImage
+      }));
       
-      return {
-        symbol,
-        name: symbol.length <= 4 ? (DEMO_STOCKS.includes(symbol) ? getCompanyName(symbol) : getCryptoName(symbol)) : symbol,
-        price: await getPriceForSymbol(symbol),
-        change: changePct
-      };
-    })
-  );
-  
-  // Sort based on type (gainers or losers)
-  const sorted = type === 'gainers'
-    ? movers.sort((a, b) => b.change - a.change) // Descending for gainers
-    : movers.sort((a, b) => a.change - b.change); // Ascending for losers
-  
-  return sorted.slice(0, limit);
-}
+      if (!symbols) {
+        cache.news = news;
+        updateCache('NEWS');
+      }
+      
+      return news;
+    }
+    
+    return [];
+  } catch (error) {
+    console.error('Error fetching market news:', error);
+    return cache.news.slice(0, limit) || [];
+  }
+};
 
-// Helper function to get company name from symbol
-function getCompanyName(symbol) {
-  const companyNames = {
-    'AAPL': 'Apple Inc.',
-    'MSFT': 'Microsoft Corporation',
-    'GOOGL': 'Alphabet Inc.',
-    'AMZN': 'Amazon.com, Inc.',
-    'META': 'Meta Platforms, Inc.',
-    'TSLA': 'Tesla, Inc.',
-    'NVDA': 'NVIDIA Corporation',
-    'JPM': 'JPMorgan Chase & Co.',
-    'V': 'Visa Inc.',
-    'WMT': 'Walmart Inc.'
-  };
-  
-  return companyNames[symbol] || `${symbol} Corp`;
-}
-
-// Helper function to get crypto name from symbol
-function getCryptoName(symbol) {
-  const cryptoNames = {
-    'BTC': 'Bitcoin',
-    'ETH': 'Ethereum',
-    'SOL': 'Solana',
-    'ADA': 'Cardano',
-    'DOT': 'Polkadot',
-    'AVAX': 'Avalanche',
-    'MATIC': 'Polygon',
-    'XRP': 'Ripple',
-    'DOGE': 'Dogecoin',
-    'SHIB': 'Shiba Inu'
-  };
-  
-  return cryptoNames[symbol] || `${symbol} Coin`;
-}
+// Get market overview (indices, trending assets, etc.)
+const getMarketOverview = async () => {
+  try {
+    // Check cache first
+    if (isCacheValid('OVERVIEW') && cache.overview) {
+      return cache.overview;
+    }
+    
+    // Prepare response object
+    const overview = {
+      indices: [],
+      trending: [],
+      marketCap: {},
+      timestamp: Date.now()
+    };
+    
+    // Get major indices
+    try {
+      // Replace with your preferred API for indices
+      // This is a placeholder for now
+      overview.indices = [
+        { symbol: 'SPY', name: 'S&P 500', price: 0, change: 0 },
+        { symbol: 'DIA', name: 'Dow Jones', price: 0, change: 0 },
+        { symbol: 'QQQ', name: 'NASDAQ', price: 0, change: 0 }
+      ];
+      
+      // Get actual index values
+      for (let i = 0; i < overview.indices.length; i++) {
+        const price = await getPriceForSymbol(overview.indices[i].symbol);
+        if (price) {
+          overview.indices[i].price = price;
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching indices:', error);
+    }
+    
+    // Get trending cryptocurrencies
+    try {
+      const response = await axios.get(
+        'https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=50&page=1&sparkline=false&price_change_percentage=1m'
+      );
+      
+      if (response.data) {
+        // Extract top cryptocurrencies
+        overview.trending = response.data.slice(0, 10).map(coin => ({
+          symbol: coin.symbol.toUpperCase(),
+          name: coin.name,
+          price: coin.current_price,
+          change: coin.price_change_percentage_24h,
+          marketCap: coin.market_cap,
+          volume: coin.total_volume,
+          image: coin.image,
+          type: 'crypto'
+        }));
+        
+        // Calculate market cap distribution
+        overview.marketCap.totalCrypto = response.data.reduce((sum, coin) => sum + (coin.market_cap || 0), 0);
+      }
+    } catch (error) {
+      console.error('Error fetching trending cryptocurrencies:', error);
+    }
+    
+    // Cache the result
+    cache.overview = overview;
+    updateCache('OVERVIEW');
+    
+    return overview;
+  } catch (error) {
+    console.error('Error in getMarketOverview:', error);
+    return cache.overview || { indices: [], trending: [], marketCap: {}, timestamp: Date.now() };
+  }
+};
 
 module.exports = {
   getPriceForSymbol,

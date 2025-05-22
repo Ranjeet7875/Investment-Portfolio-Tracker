@@ -1,6 +1,6 @@
-// server/models/User.js
 const mongoose = require('mongoose');
 const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
 
 const UserSchema = new mongoose.Schema({
   name: {
@@ -11,37 +11,42 @@ const UserSchema = new mongoose.Schema({
     type: String,
     required: true,
     unique: true,
-    lowercase: true
+    lowercase: true,
+    trim: true
   },
   password: {
     type: String,
-    required: true,
-    minlength: 6
+    required: true
   },
+  watchlist: [{
+    symbol: String,
+    type: String,
+    addedAt: {
+      type: Date,
+      default: Date.now
+    }
+  }],
   profileSettings: {
     currency: {
       type: String,
       default: 'USD'
     },
-    dashboardLayout: {
-      type: Object,
-      default: {}
-    },
     theme: {
       type: String,
-      default: 'light'
+      default: 'Light'
+    },
+    notifications: {
+      type: Boolean,
+      default: true
     }
   },
-  // Watchlist assets the user is tracking but doesn't own
-  watchlist: [{
-    symbol: String,
-    type: String
-  }]
-}, {
-  timestamps: true
+  createdAt: {
+    type: Date,
+    default: Date.now
+  }
 });
 
-// Hash password before saving
+// Hash password before saving to database
 UserSchema.pre('save', async function(next) {
   if (!this.isModified('password')) {
     return next();
@@ -51,14 +56,23 @@ UserSchema.pre('save', async function(next) {
     const salt = await bcrypt.genSalt(10);
     this.password = await bcrypt.hash(this.password, salt);
     next();
-  } catch (error) {
-    next(error);
+  } catch (err) {
+    next(err);
   }
 });
 
-// Method to compare passwords
-UserSchema.methods.comparePassword = async function(candidatePassword) {
-  return await bcrypt.compare(candidatePassword, this.password);
+// Method to check if password matches
+UserSchema.methods.comparePassword = async function(password) {
+  return await bcrypt.compare(password, this.password);
+};
+
+// Method to generate auth token
+UserSchema.methods.generateAuthToken = function() {
+  return jwt.sign(
+    { id: this._id },
+    process.env.JWT_SECRET || 'your_jwt_secret',
+    { expiresIn: '7d' }
+  );
 };
 
 module.exports = mongoose.model('User', UserSchema);

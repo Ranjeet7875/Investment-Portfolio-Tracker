@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import './Style/CryptoMarketData.css';
-import TransactionModal from './TransactionModal'; // Import the TransactionModal
+import TransactionModal from './TransactionModal'; 
 
 const CryptoMarketData = () => {
   const [cryptoData, setCryptoData] = useState([]);
@@ -83,10 +83,10 @@ const CryptoMarketData = () => {
           console.log('Local API error:', localError);
         }
         
-        // If local API fails, try CoinGecko directly
+        
         try {
           const response = await fetch(
-            'https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=10&page=1&sparkline=false&price_change_percentage=24h',
+            'https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=50&page=2&sparkline=false&price_change_percentage=24h',
             { mode: 'cors' }
           );
           
@@ -111,7 +111,7 @@ const CryptoMarketData = () => {
           console.log('CoinGecko API error:', coingeckoError);
         }
         
-        // If both APIs fail, use mock data
+  
         console.log('Using mock data as fallback');
         setCryptoData(mockCryptoData);
         setError('Unable to connect to live data. Showing sample data.');
@@ -133,7 +133,6 @@ const CryptoMarketData = () => {
     return () => clearInterval(intervalId);
   }, []);
 
-  // Fetch historical data when a coin is selected
   useEffect(() => {
     const fetchHistoricalData = async () => {
       if (!selectedCoin) return;

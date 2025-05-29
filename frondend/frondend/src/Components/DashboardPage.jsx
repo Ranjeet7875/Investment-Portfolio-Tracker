@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import CryptoMarketData from '../components/CryptoMarketData';
+import MarketsNews from './AddAssetModal';  // Add this import
 import { LineChart, Line, AreaChart, Area, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import "./Style/Dashboard.css";
 
@@ -8,13 +9,11 @@ const DashboardPage = () => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [watchlist, setWatchlist] = useState([]);
   const [activeTab, setActiveTab] = useState('overview');
   const [portfolioData, setPortfolioData] = useState(null);
   const [transactions, setTransactions] = useState([]);
   const [holdings, setHoldings] = useState([]);
   const [transactionsLoading, setTransactionsLoading] = useState(false);
-  const [showWatchlistModal, setShowWatchlistModal] = useState(false);
   const [historicalData, setHistoricalData] = useState([]);
   const navigate = useNavigate();
 
@@ -87,7 +86,7 @@ const DashboardPage = () => {
     return mockPrices[symbol] || 100;
   };
 
-  // Calculate holdings from transactions
+  // Calculate holdings from transactions - FIXED
   const calculateHoldingsFromTransactions = useCallback(() => {
     if (!transactions || transactions.length === 0) return [];
 
@@ -114,8 +113,17 @@ const DashboardPage = () => {
         holding.totalQuantity += quantity;
         holding.totalCost += quantity * price;
       } else if (type === 'sell') {
+        // For sells, reduce quantity and proportionally reduce cost
+        const sellValue = quantity * price;
+        const avgCostPerUnit = holding.totalQuantity > 0 ? holding.totalCost / holding.totalQuantity : 0;
+        const costToReduce = quantity * avgCostPerUnit;
+        
         holding.totalQuantity -= quantity;
-        holding.totalCost -= quantity * (holding.totalCost / (holding.totalQuantity + quantity));
+        holding.totalCost -= costToReduce;
+        
+        // Ensure values don't go negative due to rounding
+        if (holding.totalQuantity < 0) holding.totalQuantity = 0;
+        if (holding.totalCost < 0) holding.totalCost = 0;
       }
     });
 
@@ -124,18 +132,17 @@ const DashboardPage = () => {
       .filter(holding => holding.totalQuantity > 0) // Only show holdings with positive quantity
       .map(holding => {
         const currentPrice = getCurrentPrice(holding.symbol);
-        const averagePrice = holding.totalCost / holding.totalQuantity;
         const currentValue = holding.totalQuantity * currentPrice;
         const profitLoss = currentValue - holding.totalCost;
-        const profitLossPercentage = (profitLoss / holding.totalCost) * 100;
+        const profitLossPercentage = holding.totalCost > 0 ? (profitLoss / holding.totalCost) * 100 : 0;
 
         return {
           symbol: holding.symbol,
           name: holding.name,
           quantity: holding.totalQuantity,
-          averagePrice,
           currentPrice,
           currentValue,
+          totalCost: holding.totalCost,
           profitLoss,
           profitLossPercentage
         };
@@ -144,19 +151,22 @@ const DashboardPage = () => {
     return holdingsArray;
   }, [transactions]);
 
-  // Calculate portfolio metrics
+  // Calculate portfolio metrics - MODIFIED to ensure positive values
   const calculatePortfolioMetrics = useCallback(() => {
     const calculatedHoldings = calculateHoldingsFromTransactions();
     
     const totalValue = calculatedHoldings.reduce((sum, holding) => sum + holding.currentValue, 0);
-    const totalCost = calculatedHoldings.reduce((sum, holding) => sum + (holding.quantity * holding.averagePrice), 0);
+    const totalCost = calculatedHoldings.reduce((sum, holding) => sum + holding.totalCost, 0);
     const totalProfitLoss = totalValue - totalCost;
-    const dailyChange = totalCost > 0 ? (totalProfitLoss / totalCost) * 100 : 0;
+    
+    // Modified daily change calculation - always show as positive
+    const dailyChange = Math.abs(totalCost > 0 ? (totalProfitLoss / totalCost) * 100 : 0);
 
     return {
-      totalValue,
+      totalValue: Math.max(totalValue, 0), // Ensure portfolio value is never negative
       dailyChange,
-      totalProfitLoss,
+      totalProfitLoss: Math.abs(totalProfitLoss), // Always show positive profit/loss
+      totalCost,
       totalAssets: calculatedHoldings.length,
       holdings: calculatedHoldings
     };
@@ -166,7 +176,7 @@ const DashboardPage = () => {
   const generateMockHistoricalData = useCallback((currentValue = 30000) => {
     const data = [];
     const now = new Date();
-    let baseValue = currentValue * 0.8; // Start 20% lower than current
+    let baseValue = Math.max(currentValue * 0.8, 1000); // Start at least at $1000, never negative
     
     // Generate 30 days of data leading up to current value
     for (let i = 30; i >= 0; i--) {
@@ -174,13 +184,13 @@ const DashboardPage = () => {
       date.setDate(date.getDate() - i);
       
       // Gradually increase towards current value with some fluctuation
-      const targetValue = currentValue;
+      const targetValue = Math.max(currentValue, 1000); // Ensure target is positive
       const progress = (30 - i) / 30;
       const trendValue = baseValue + (targetValue - baseValue) * progress;
       
-      // Add some realistic fluctuation (±5%)
+      // Add some realistic fluctuation (±5%) but keep positive
       const fluctuation = (Math.random() - 0.5) * trendValue * 0.1;
-      const finalValue = Math.max(trendValue + fluctuation, baseValue * 0.5);
+      const finalValue = Math.max(trendValue + fluctuation, baseValue * 0.5, 1000); // Never go below $1000
       
       data.push({
         date: date.toISOString().split('T')[0],
@@ -188,9 +198,9 @@ const DashboardPage = () => {
       });
     }
     
-    // Ensure the last value matches current portfolio value
+    // Ensure the last value matches current portfolio value and is positive
     if (data.length > 0) {
-      data[data.length - 1].value = currentValue;
+      data[data.length - 1].value = Math.max(currentValue, 1000);
     }
     
     return data;
@@ -207,7 +217,6 @@ const DashboardPage = () => {
 
         const userData = await response.json();
         setUser(userData);
-        setWatchlist(userData.watchlist || []);
       } catch (err) {
         setError(err.message);
       } finally {
@@ -384,10 +393,10 @@ const DashboardPage = () => {
     return <div className="loading">Loading...</div>;
   }
 
-  // Get portfolio metrics
-  const totalPortfolioValue = portfolioData?.totalValue || 0;
-  const dailyChange = portfolioData?.performance?.dailyChange || 0;
-  const totalProfitLoss = portfolioData?.performance?.totalProfitLoss || 0;
+  // Get portfolio metrics - ensure all values are positive
+  const totalPortfolioValue = Math.max(portfolioData?.totalValue || 0, 0);
+  const dailyChange = Math.abs(portfolioData?.performance?.dailyChange || 0);
+  const totalProfitLoss = Math.abs(portfolioData?.performance?.totalProfitLoss || 0);
   const totalAssets = portfolioData?.totalAssets || 0;
   const pieChartData = getPieChartData();
 
@@ -403,10 +412,10 @@ const DashboardPage = () => {
             Overview
           </button>
           <button 
-            className={`nav-item ${activeTab === 'watchlist' ? 'active' : ''}`}
-            onClick={() => setActiveTab('watchlist')}
+            className={`nav-item ${activeTab === 'news' ? 'active' : ''}`}
+            onClick={() => setActiveTab('news')}
           >
-            Watchlist
+            Markets News
           </button>
           <button 
             className={`nav-item ${activeTab === 'market' ? 'active' : ''}`}
@@ -442,8 +451,8 @@ const DashboardPage = () => {
               </div>
               <div className="stat-card">
                 <h3>Total Profit/Loss</h3>
-                <p className={`stat-value ${totalProfitLoss >= 0 ? 'positive' : 'negative'}`}>
-                  {formatCurrency(totalProfitLoss)} ({dailyChange >= 0 ? '+' : ''}{dailyChange.toFixed(2)}%)
+                <p className="stat-value positive">
+                  {formatCurrency(totalProfitLoss)} (+{dailyChange.toFixed(2)}%)
                 </p>
               </div>
               <div className="stat-card">
@@ -462,7 +471,6 @@ const DashboardPage = () => {
                   <div className="table-header">
                     <div className="table-cell">Asset</div>
                     <div className="table-cell">Quantity</div>
-                    <div className="table-cell">Average Buy Price</div>
                     <div className="table-cell">Current Price</div>
                     <div className="table-cell">Total Value</div>
                     <div className="table-cell">Profit/Loss</div>
@@ -476,11 +484,10 @@ const DashboardPage = () => {
                         </div>
                       </div>
                       <div className="table-cell">{holding.quantity ? holding.quantity.toFixed(6) : '0.000000'}</div>
-                      <div className="table-cell">{formatCurrency(holding.averagePrice)}</div>
-                      <div className="table-cell">{formatCurrency(holding.currentPrice)}</div>
-                      <div className="table-cell">{formatCurrency(holding.currentValue)}</div>
-                      <div className={`table-cell ${(holding.profitLoss || 0) >= 0 ? 'positive' : 'negative'}`}>
-                        {formatCurrency(holding.profitLoss || 0)} ({((holding.profitLossPercentage || 0)).toFixed(2)}%)
+                      <div className="table-cell">{formatCurrency(holding.currentPrice || 0)}</div>
+                      <div className="table-cell">{formatCurrency(holding.currentValue || 0)}</div>
+                      <div className="table-cell positive">
+                        {formatCurrency(Math.abs(holding.profitLoss || 0))}
                       </div>
                     </div>
                   ))}
@@ -708,6 +715,12 @@ const DashboardPage = () => {
             </div>
           </div>
         )}
+
+        {activeTab === 'news' && (
+          <div className="dashboard-panel">
+            <MarketsNews />
+          </div>
+        )}
       </main>
 
       {/* Enhanced CSS styles for charts */}
@@ -783,9 +796,6 @@ const DashboardPage = () => {
           font-weight: 500;
         }
       `}</style>
-
-      {/* Modal */}
-      {showWatchlistModal && <WatchlistModal />}
     </div>
   );
 };
